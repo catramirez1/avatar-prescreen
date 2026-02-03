@@ -1,0 +1,15 @@
+# Python virtual env
+.venv/
+
+# Models / large files
+models/
+assets/voices/
+output/
+__pycache__/
+*.pyc
+*.wav
+*.mp4
+*.bin
+*.onnx
+*.pth
+.DS_Store
