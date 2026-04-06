@@ -1,0 +1,37 @@
+{
+  "ScenarioContext": ["clinic_intake", "ed", "inpatient", "discharge", "phone_call"],
+  "AffectState": ["calm", "anxious", "angry", "confused", "tearful", "high_agitation"],
+  "Risk": ["none", "violence_warning_signs", "self_harm_risk", "medical_emergency"],
+  "CommunicationIntent": [
+    "greet",
+    "acknowledge_emotion",
+    "open_question",
+    "reflect",
+    "summarize",
+    "boundary_set",
+    "teach_back",
+    "close"
+  ],
+  "IntentTransitions": {
+    "greet": ["open_question"],
+    "open_question": ["acknowledge_emotion", "reflect", "summarize", "boundary_set"],
+    "acknowledge_emotion": ["open_question", "reflect", "summarize", "boundary_set"],
+    "reflect": ["open_question", "summarize", "teach_back"],
+    "summarize": ["teach_back", "close"],
+    "boundary_set": ["open_question", "summarize", "close"],
+    "teach_back": ["close"],
+    "close": ["greet"]
+  },
+  "Rules": [
+    {
+      "name": "agitation_requires_boundary_before_close",
+      "if": {"AffectState": "high_agitation"},
+      "require_before": {"intent": "close", "required_intent": "boundary_set"}
+    },
+    {
+      "name": "no_medical_advice",
+      "forbid_intents": ["medical_advice", "diagnose", "prescribe"]
+    }
+  ]
+}
+

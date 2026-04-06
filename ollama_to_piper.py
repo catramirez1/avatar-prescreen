@@ -39,7 +39,8 @@ payload = {
 
 r = requests.post(URL, json=payload, timeout=120)
 r.raise_for_status()
-content = r.json()["message"]["content"].strip()
+data = r.json()
+content = data["message"]["content"]
 start, end = content.find("{"), content.rfind("}")
 out = json.loads(content[start:end+1])
 

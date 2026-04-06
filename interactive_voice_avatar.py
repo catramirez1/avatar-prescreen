@@ -2,7 +2,6 @@ import json
 import subprocess
 from pathlib import Path
 import requests
-
 import numpy as np
 import sounddevice as sd
 from scipy.io.wavfile import write as wavwrite
@@ -11,8 +10,9 @@ PROJECT = Path.home() / "research" / "avatar-prescreen"
 ASSETS = PROJECT / "assets"
 AUDIO_DIR = ASSETS / "audio"
 OUTPUT_DIR = PROJECT / "output"
+ONTOLOGY_PATH = PROJECT / "ontology.json"
 
-# Whisper.cpp (offline STT) via Homebrew whisper-cpp formula
+# Whisper.cpp (offline STT)
 WHISPER_BIN = "whisper-cli"
 WHISPER_MODEL = PROJECT / "models" / "whisper" / "ggml-base.en.bin"
 
@@ -24,10 +24,9 @@ OLLAMA_MODEL = "llama3.2"
 PIPER_MODEL = ASSETS / "voices" / "en_US-amy-medium.onnx"
 PIPER_CONFIG = ASSETS / "voices" / "en_US-amy-medium.onnx.json"
 
-
 # SadTalker
 SADTALKER_DIR = PROJECT / "SadTalker"
-FACE_IMAGE = ASSETS / "faces" / "testimage.jpeg"  # <-- change if needed
+FACE_IMAGE = ASSETS / "faces" / "testimage.jpeg"
 
 STATE_PATH = PROJECT / "state.json"
 
@@ -69,9 +68,12 @@ Set done=true ONLY when these are filled:
 chief_complaint, duration, severity_1_to_10, allergies
 """
 
-# Toggle video generation (SadTalker is slow). Keep False for smooth demos.
-MAKE_VIDEO = True
+MAKE_VIDEO = False   # set False if SadTalker is too slow
 
+
+# -------------------------------------------------
+# AUDIO RECORDING
+# -------------------------------------------------
 
 def record_until_silence(
     out_wav: Path,
@@ -125,9 +127,14 @@ def record_until_silence(
     print(f"✅ Saved mic audio: {out_wav}")
 
 
+# -------------------------------------------------
+# WHISPER TRANSCRIPTION
+# -------------------------------------------------
+
 def transcribe_whisper(wav_path: Path) -> str:
-    base = wav_path.with_suffix("")          # e.g., assets/audio/mic_1
-    txt_path = Path(str(base) + ".txt")      # e.g., assets/audio/mic_1.txt
+    base = wav_path.with_suffix("")
+    txt_path = Path(str(base) + ".txt")
+
     if txt_path.exists():
         txt_path.unlink()
 
@@ -137,8 +144,8 @@ def transcribe_whisper(wav_path: Path) -> str:
         "-f", str(wav_path),
         "-otxt",
         "-of", str(base),
-        "-nt",   # no timestamps (cleaner)
-        "-np",   # fewer prints
+        "-nt",
+        "-np",
     ]
     subprocess.run(cmd, check=True)
 
@@ -148,29 +155,31 @@ def transcribe_whisper(wav_path: Path) -> str:
     return txt_path.read_text(encoding="utf-8").strip()
 
 
+# -------------------------------------------------
+# OLLAMA CALL
+# -------------------------------------------------
+
 def ask_ollama(messages: list[dict]) -> dict:
     payload = {
         "model": OLLAMA_MODEL,
         "stream": False,
         "messages": messages,
     }
+
     r = requests.post(OLLAMA_URL, json=payload, timeout=120)
     r.raise_for_status()
     content = r.json()["message"]["content"].strip()
 
     start, end = content.find("{"), content.rfind("}")
     if start == -1 or end == -1:
-        raise RuntimeError(f"Ollama did not return JSON. Raw output:\n{content}")
+        raise RuntimeError(f"Ollama did not return JSON:\n{content}")
 
     return json.loads(content[start:end+1])
 
-    # Parse JSON even if it wraps it with text
-    start, end = content.find("{"), content.rfind("}")
-    if start == -1 or end == -1:
-        raise RuntimeError(f"Ollama did not return JSON. Raw output:\n{content}")
 
-    return json.loads(content[start:end+1])
-
+# -------------------------------------------------
+# PIPER TTS
+# -------------------------------------------------
 
 def piper_tts(text: str, out_wav: Path):
     cmd = [
@@ -182,33 +191,47 @@ def piper_tts(text: str, out_wav: Path):
     subprocess.run(cmd, input=text.encode("utf-8"), check=True)
 
 
-def sadtalker_video(driven_audio: Path, source_image: Path, out_dir: Path):
-    cmd = [
-        "python", "inference.py",
-        "--driven_audio", str(driven_audio),
-        "--source_image", str(source_image),
-        "--result_dir", str(out_dir)
-    ]
-    subprocess.run(cmd, cwd=str(SADTALKER_DIR), check=True)
+# -------------------------------------------------
+# SADTALKER VIDEO
+# -------------------------------------------------
+
+# def sadtalker_video(driven_audio: Path, source_image: Path, out_dir: Path):
+  #  cmd = [
+      #  "python", "inference.py",
+        # "--driven_audio", str(driven_audio),
+        # "--source_image", str(source_image),
+        # "--result_dir", str(out_dir)
+   # ]
+    #subprocess.run(cmd, cwd=str(SADTALKER_DIR), check=True)
+from live_avatar import play_and_animate
 
 
-def save_state(state):
-    STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+# -------------------------------------------------
+# ONTOLOGY LOADER
+# -------------------------------------------------
 
+def load_ontology():
+    if not ONTOLOGY_PATH.exists():
+        raise FileNotFoundError(f"Ontology file missing: {ONTOLOGY_PATH}")
+    return json.loads(ONTOLOGY_PATH.read_text(encoding="utf-8"))
+
+
+# -------------------------------------------------
+# MAIN LOOP
+# -------------------------------------------------
 
 def main():
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # AUTO-RESET EVERY RUN
+    ontology = load_ontology()
+    print("📚 Loaded ontology:", list(ontology.keys()))
+
     intake = {}
     turn = 0
     max_turns = 10
-
-    # Track last asked question to prevent repetition
     last_question = None
 
-    # A simple fallback sequence if the LLM repeats
     fallback_questions = [
         "What brings you in today?",
         "How long have you been experiencing this?",
@@ -220,37 +243,29 @@ def main():
     ]
     fallback_i = 0
 
-    # Conversation memory for Ollama
     messages = [{"role": "system", "content": SYSTEM}]
 
-    # -----------------------------
-    # SYSTEM TALKS FIRST
-    # -----------------------------
-    greeting_question = "Hello! I’m going to ask you a few quick questions to help the nurse prepare for your visit. What brings you in today?"
-    messages.append({"role": "assistant", "content": greeting_question})
+    # ---- SYSTEM TALKS FIRST ----
+    greeting = (
+        "Hello! I’m going to ask you a few quick questions to help the nurse prepare for your visit. "
+        "What brings you in today?"
+    )
+
+    messages.append({"role": "assistant", "content": greeting})
 
     avatar_wav = AUDIO_DIR / "avatar_0.wav"
     print("🔊 Generating greeting audio...")
-    piper_tts(greeting_question, avatar_wav)
+    piper_tts(greeting, avatar_wav)
 
-    print("🔊 Playing greeting audio...")
-    subprocess.run(["afplay", str(avatar_wav)], check=False)
+    print("🔊 Playing greeting audio + live animation...")
+    play_and_animate(avatar_wav, FACE_IMAGE)
 
-    if MAKE_VIDEO:
-        print("🎥 Generating greeting video...")
-        sadtalker_video(avatar_wav, FACE_IMAGE, OUTPUT_DIR)
-        open_latest_video(OUTPUT_DIR)
 
-    last_question = "What brings you in today?"
-    turn = 1
-
-    # -----------------------------
-    # LOOP
-    # -----------------------------
+    # ---- MAIN LOOP ----
     while True:
         if turn > max_turns:
             print("✅ Reached max turns. Ending session.")
-            (PROJECT / "output" / "final_intake.json").write_text(json.dumps(intake, indent=2), encoding="utf-8")
+            (OUTPUT_DIR / "final_intake.json").write_text(json.dumps(intake, indent=2), encoding="utf-8")
             break
 
         mic_wav = AUDIO_DIR / f"mic_{turn}.wav"
@@ -265,29 +280,24 @@ def main():
 
         messages.append({"role": "user", "content": user_text})
 
-        # Ask LLM for next step
         reply = ask_ollama(messages)
-
-        # Update intake
         intake = reply.get("intake", intake)
 
         assistant_text = reply.get("assistant_text", "").strip()
         next_question = reply.get("next_question", "").strip()
 
-        # If the model repeats or gives nothing, fallback
+        # fallback if model repeats or fails
         if (not next_question) or (last_question and next_question.lower() == last_question.lower()):
             if fallback_i < len(fallback_questions):
                 next_question = fallback_questions[fallback_i]
                 fallback_i += 1
             else:
-                next_question = "Thank you. Is there anything else you think the nurse should know today?"
+                next_question = "Is there anything else you think the nurse should know?"
 
-        # Stop criteria (required fields)
         required = ["chief_complaint", "duration", "severity_1_to_10", "allergies"]
         if all(str(intake.get(k, "")).strip() for k in required):
             reply["done"] = True
 
-        # Speak out loud
         spoken = (assistant_text + " " + next_question).strip()
         if not spoken:
             spoken = "Thanks. Can you tell me more about your symptoms?"
@@ -300,24 +310,22 @@ def main():
         piper_tts(spoken, avatar_wav)
 
         print("🔊 Playing reply audio...")
-        subprocess.run(["afplay", str(avatar_wav)], check=False)
+        play_and_animate(avatar_wav, FACE_IMAGE)
 
         if MAKE_VIDEO:
             print("🎥 Generating reply video...")
-            sadtalker_video(avatar_wav, FACE_IMAGE, OUTPUT_DIR)
-            open_latest_video(OUTPUT_DIR)
+            play_and_animate(avatar_wav, FACE_IMAGE)
 
         print("✅ Intake so far:\n", json.dumps(intake, indent=2))
 
-        # Stop conditions
         if bool(reply.get("safety_flag", False)):
-            print("⚠️ Safety flag true — stopping flow.")
-            (PROJECT / "output" / "final_intake.json").write_text(json.dumps(intake, indent=2), encoding="utf-8")
+            print("⚠️ Safety flag true — stopping.")
+            (OUTPUT_DIR / "final_intake.json").write_text(json.dumps(intake, indent=2), encoding="utf-8")
             break
 
         if bool(reply.get("done", False)):
             print("✅ Done. Saving nurse handoff.")
-            (PROJECT / "output" / "final_intake.json").write_text(json.dumps(intake, indent=2), encoding="utf-8")
+            (OUTPUT_DIR / "final_intake.json").write_text(json.dumps(intake, indent=2), encoding="utf-8")
             print("🩺 Nurse handoff saved to output/final_intake.json")
             break
 
