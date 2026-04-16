@@ -1,9 +1,14 @@
 {
-  "turn": 6,
+  "turn": 11,
   "intake": {
     "symptoms": [
-      "headache",
-      "eye pain"
-    ]
-  }
+      "Hi, my name is Katherine and I'm here for a headache.",
+      "I am not feeling well.",
+      "What is making you feel unwell?"
+    ],
+    "duration": null,
+    "severity": null
+  },
+  "next_question": "severity",
+  "done": false
 }
